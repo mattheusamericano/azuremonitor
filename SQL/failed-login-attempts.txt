@@ -1,0 +1,6 @@
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where Category == "SQLSecurityAuditEvents"
+| where action_name_s == "LOGIN FAILED"
+| summarize FailedLogins = count() by bin(TimeGenerated, 5m), client_ip_s
+| order by TimeGenerated desc

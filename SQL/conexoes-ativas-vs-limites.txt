@@ -1,0 +1,6 @@
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where MetricName == "connection_successful" or MetricName == "connection_failed"
+| where TimeGenerated > ago(30m)
+| summarize Total = sum(Total) by MetricName, bin(TimeGenerated, 1m)
+| render timechart

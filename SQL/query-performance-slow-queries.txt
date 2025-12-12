@@ -1,0 +1,7 @@
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where Category == "QueryStoreRuntimeStatistics"
+| where duration_s > 5
+| project TimeGenerated, query_hash_s, duration_s, logical_reads_d, cpu_time_d
+| order by TimeGenerated desc
+| take 50

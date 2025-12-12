@@ -1,0 +1,7 @@
+// Para SQL Database
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where MetricName in ("cpu_percent", "dtu_consumption_percent", "storage_percent")
+| where TimeGenerated > ago(15m)
+| summarize AvgValue = avg(Average), MaxValue = max(Maximum) by MetricName, bin(TimeGenerated, 1m)
+| render timechart

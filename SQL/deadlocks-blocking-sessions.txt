@@ -1,0 +1,7 @@
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where MetricName == "deadlock"
+| where TimeGenerated > ago(1h)
+| summarize DeadlockCount = sum(Total) by bin(TimeGenerated, 5m)
+| where DeadlockCount > 0
+| render timechart

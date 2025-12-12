@@ -1,0 +1,6 @@
+AzureMetrics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where MetricName == "log_write_percent"
+| where TimeGenerated > ago(15m)
+| summarize AvgLogUsage = avg(Average), MaxLogUsage = max(Maximum) by bin(TimeGenerated, 1m)
+| render timechart
