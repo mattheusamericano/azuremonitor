@@ -1,166 +1,188 @@
 // ========================================
-// QUERY 1: Contagem de Nós por Nodepool ao Longo do Tempo
+// QUERY 1: Eventos de Autoscaler (Principais)
 // ========================================
-// Mostra quantos nós cada nodepool teve nos últimos dias
-KubeNodeInventory
+// Captura todos os eventos do cluster autoscaler
+AzureDiagnostics
 | where TimeGenerated > ago(7d)
-| extend NodePool = tostring(Labels["agentpool"])
-| summarize NodeCount = dcount(Computer) by bin(TimeGenerated, 30m), NodePool, ClusterName
-| order by TimeGenerated desc, NodePool asc
+| where Category == "cluster-autoscaler"
+| project TimeGenerated, log_s, pod_s, ResourceId
+| order by TimeGenerated desc
+
+// ========================================
+// QUERY 2: Eventos de Scale Up/Down
+// ========================================
+// Filtra especificamente eventos de scale
+AzureDiagnostics
+| where TimeGenerated > ago(7d)
+| where Category == "cluster-autoscaler"
+| where log_s contains "scale" or log_s contains "ScaleUp" or log_s contains "ScaleDown"
+| extend 
+    EventType = case(
+        log_s contains "ScaleUp" or log_s contains "scale up", "Scale Up",
+        log_s contains "ScaleDown" or log_s contains "scale down", "Scale Down",
+        log_s contains "scale", "Scale Event",
+        "Other"
+    )
+| project TimeGenerated, EventType, log_s, ResourceId
+| order by TimeGenerated desc
+
+// ========================================
+// QUERY 3: Identificar Nodepools nos Eventos
+// ========================================
+// Extrai informações de nodepool dos logs
+AzureDiagnostics
+| where TimeGenerated > ago(7d)
+| where Category == "cluster-autoscaler"
+| where log_s contains "nodepool" or log_s contains "agentpool"
+| extend NodePool = extract(@"nodepool[:\s]+([a-zA-Z0-9]+)", 1, log_s)
+| project TimeGenerated, NodePool, log_s
+| order by TimeGenerated desc
+
+// ========================================
+// QUERY 4: Resumo de Eventos por Dia
+// ========================================
+// Conta eventos de autoscaler por dia
+AzureDiagnostics
+| where TimeGenerated > ago(30d)
+| where Category == "cluster-autoscaler"
+| extend EventType = case(
+    log_s contains "ScaleUp", "Scale Up",
+    log_s contains "ScaleDown", "Scale Down",
+    log_s contains "pending", "Pending Pods",
+    "Other"
+)
+| summarize EventCount = count() by bin(TimeGenerated, 1d), EventType
 | render timechart
 
 // ========================================
-// QUERY 2: Eventos de Scale (Autoscaler)
+// QUERY 5: Logs do Kube-Controller-Manager
 // ========================================
-// Captura eventos do cluster autoscaler relacionados a scale up/down
+// Eventos do controller manager relacionados a nodes
 AzureDiagnostics
+| where TimeGenerated > ago(7d)
+| where Category == "kube-controller-manager"
+| where log_s contains "node" or log_s contains "scale"
+| project TimeGenerated, log_s, pod_s
+| order by TimeGenerated desc
+
+// ========================================
+// QUERY 6: Eventos de Recursos Insuficientes
+// ========================================
+// Identifica quando não há recursos suficientes (trigger de scale)
+AzureDiagnostics
+| where TimeGenerated > ago(7d)
 | where Category == "cluster-autoscaler"
-| where TimeGenerated > ago(7d)
-| where log_s contains "scale" or log_s contains "node"
-| project TimeGenerated, log_s, ResourceId
-| order by TimeGenerated desc
-
-// ========================================
-// QUERY 3: Status Atual de Cada Nodepool
-// ========================================
-// Visão atual da quantidade de nós por nodepool
-KubeNodeInventory
-| where TimeGenerated > ago(1h)
-| extend NodePool = tostring(Labels["agentpool"])
-| summarize 
-    TotalNodes = dcount(Computer),
-    ReadyNodes = dcountif(Computer, Status == "Ready"),
-    NotReadyNodes = dcountif(Computer, Status != "Ready"),
-    LastUpdate = max(TimeGenerated)
-    by NodePool, ClusterName
-| project NodePool, ClusterName, TotalNodes, ReadyNodes, NotReadyNodes, LastUpdate
-| order by NodePool asc
-
-// ========================================
-// QUERY 4: Histórico de Mudanças nos Nodepools
-// ========================================
-// Detecta quando houve mudança na quantidade de nós
-KubeNodeInventory
-| where TimeGenerated > ago(7d)
-| extend NodePool = tostring(Labels["agentpool"])
-| summarize NodeCount = dcount(Computer) by bin(TimeGenerated, 10m), NodePool
-| order by NodePool asc, TimeGenerated asc
-| serialize 
-| extend PreviousCount = prev(NodeCount, 1)
-| extend NodePoolPrev = prev(NodePool, 1)
-| where NodePool == NodePoolPrev and NodeCount != PreviousCount
-| project TimeGenerated, NodePool, PreviousCount, NodeCount, 
-    Change = NodeCount - PreviousCount,
-    ChangeType = iff(NodeCount > PreviousCount, "Scale Up", "Scale Down")
-| order by TimeGenerated desc
-
-// ========================================
-// QUERY 5: Utilização de Recursos por Nodepool
-// ========================================
-// Mostra CPU e memória por nodepool
-let nodepools = KubeNodeInventory
-| where TimeGenerated > ago(1h)
-| extend NodePool = tostring(Labels["agentpool"])
-| distinct Computer, NodePool;
-Perf
-| where TimeGenerated > ago(24h)
-| where ObjectName == "K8SNode"
-| where CounterName in ("cpuUsageNanoCores", "memoryWorkingSetBytes")
-| join kind=inner (nodepools) on Computer
-| summarize 
-    AvgCPU = avg(iff(CounterName == "cpuUsageNanoCores", CounterValue, 0.0)),
-    AvgMemory = avg(iff(CounterName == "memoryWorkingSetBytes", CounterValue, 0.0))
-    by bin(TimeGenerated, 30m), NodePool
-| order by TimeGenerated desc, NodePool asc
-
-// ========================================
-// QUERY 6: Eventos de Scale nos Últimos 30 Dias (Resumo)
-// ========================================
-// Resumo de eventos de scale por nodepool
-KubeNodeInventory
-| where TimeGenerated > ago(30d)
-| extend NodePool = tostring(Labels["agentpool"])
-| summarize NodeCount = dcount(Computer) by bin(TimeGenerated, 1h), NodePool
-| order by NodePool asc, TimeGenerated asc
-| serialize 
-| extend PreviousCount = prev(NodeCount, 1)
-| extend NodePoolPrev = prev(NodePool, 1)
-| where NodePool == NodePoolPrev and NodeCount != PreviousCount
-| summarize 
-    ScaleEvents = count(),
-    TotalScaleUp = countif(NodeCount > PreviousCount),
-    TotalScaleDown = countif(NodeCount < PreviousCount),
-    MaxNodes = max(NodeCount),
-    MinNodes = min(PreviousCount),
-    LastScaleEvent = max(TimeGenerated)
-    by NodePool
-| order by ScaleEvents desc
-
-// ========================================
-// QUERY 7: Pods Pending que podem causar Scale
-// ========================================
-// Identifica pods em estado Pending que podem acionar autoscale
-KubePodInventory
-| where TimeGenerated > ago(24h)
-| where PodStatus == "Pending"
-| extend NodePool = tostring(PodLabel[0]["agentpool"])
-| summarize 
-    PendingPods = count(),
-    PodNames = make_set(Name)
-    by bin(TimeGenerated, 5m), Namespace, NodePool
-| where PendingPods > 0
-| order by TimeGenerated desc
-
-// ========================================
-// QUERY 8: Logs de Scale do Kube-apiserver
-// ========================================
-// Captura eventos específicos de scale nos logs do API Server
-AzureDiagnostics
-| where Category == "kube-apiserver"
-| where TimeGenerated > ago(7d)
-| where log_s contains "scale" or log_s contains "deployment" or log_s contains "replicaset"
-| where log_s contains "nodepool" or log_s contains "agentpool"
+| where log_s contains "insufficient" or log_s contains "unschedulable" or log_s contains "pending"
 | project TimeGenerated, log_s
 | order by TimeGenerated desc
 
 // ========================================
-// QUERY 9: Comparação de Nodepools (Dashboard View)
+// QUERY 7: Timeline de Atividades do Autoscaler
 // ========================================
-// Visão comparativa de todos os nodepools
-KubeNodeInventory
+// Visão temporal das ações do autoscaler
+AzureDiagnostics
 | where TimeGenerated > ago(24h)
-| extend NodePool = tostring(Labels["agentpool"])
-| extend VMSize = tostring(Labels["kubernetes.azure.com/agentpool"])
-| summarize 
-    CurrentNodes = dcount(Computer),
-    ReadyNodes = dcountif(Computer, Status == "Ready"),
-    AvailableCapacity = sum(toint(Labels["kubernetes.io/capacity.cpu"])),
-    LastSeen = max(TimeGenerated)
-    by NodePool, ClusterName
-| extend HealthPercent = round((ReadyNodes * 100.0) / CurrentNodes, 2)
-| project NodePool, ClusterName, CurrentNodes, ReadyNodes, HealthPercent, AvailableCapacity, LastSeen
-| order by CurrentNodes desc
+| where Category == "cluster-autoscaler"
+| extend 
+    Action = case(
+        log_s contains "ScaleUp" or log_s contains "scale up", "⬆️ Scale Up",
+        log_s contains "ScaleDown" or log_s contains "scale down", "⬇️ Scale Down",
+        log_s contains "pending", "⏳ Pending",
+        log_s contains "insufficient", "⚠️ Insufficient Resources",
+        log_s contains "node" and log_s contains "ready", "✅ Node Ready",
+        "ℹ️ Info"
+    )
+| summarize Events = count() by bin(TimeGenerated, 10m), Action
+| render timechart
 
 // ========================================
-// QUERY 10: Timeline de Eventos de Scale (Detalhado)
+// QUERY 8: Todos os Logs de Diagnóstico do AKS
 // ========================================
-// Timeline detalhada mostrando cada mudança
-KubeNodeInventory
+// Visualiza todas as categorias disponíveis
+AzureDiagnostics
+| where TimeGenerated > ago(1h)
+| summarize count() by Category, OperationName
+| order by count_ desc
+
+// ========================================
+// QUERY 9: Eventos do API Server sobre Nodes
+// ========================================
+// Logs do API Server relacionados a nodes e scale
+AzureDiagnostics
 | where TimeGenerated > ago(7d)
-| extend NodePool = tostring(Labels["agentpool"])
-| summarize Nodes = make_set(Computer), NodeCount = dcount(Computer) by bin(TimeGenerated, 5m), NodePool
-| order by NodePool asc, TimeGenerated asc
-| serialize 
-| extend PrevCount = prev(NodeCount, 1), PrevNodePool = prev(NodePool, 1)
-| where NodePool == PrevNodePool
-| extend 
-    Changed = iff(NodeCount != PrevCount, "Yes", "No"),
-    Delta = NodeCount - PrevCount,
-    Action = case(
-        NodeCount > PrevCount, strcat("⬆️ Scale Up (+", NodeCount - PrevCount, ")"),
-        NodeCount < PrevCount, strcat("⬇️ Scale Down (", NodeCount - PrevCount, ")"),
-        "No Change"
-    )
-| where Changed == "Yes"
-| project TimeGenerated, NodePool, PreviousNodes = PrevCount, CurrentNodes = NodeCount, Delta, Action
+| where Category == "kube-apiserver"
+| where log_s contains "node" or log_s contains "scale"
+| project TimeGenerated, OperationName, log_s, ResponseCode = responseStatus_s
 | order by TimeGenerated desc
+
+// ========================================
+// QUERY 10: Análise de Pods Não Agendados
+// ========================================
+// Pods que não conseguem ser agendados (causa de scale up)
+AzureDiagnostics
+| where TimeGenerated > ago(24h)
+| where Category == "kube-scheduler" or Category == "cluster-autoscaler"
+| where log_s contains "unschedulable" or log_s contains "FailedScheduling"
+| project TimeGenerated, Category, log_s
+| order by TimeGenerated desc
+
+// ========================================
+// QUERY 11: Métricas de Nodes via Insights
+// ========================================
+// Se você tem Container Insights habilitado
+InsightsMetrics
+| where TimeGenerated > ago(24h)
+| where Namespace == "container.azm.ms/nodes"
+| where Name == "cpuUsagePercentage" or Name == "memoryWorkingSetPercentage"
+| extend NodeName = tostring(Tags["node"])
+| summarize 
+    AvgCPU = avgif(Val, Name == "cpuUsagePercentage"),
+    AvgMemory = avgif(Val, Name == "memoryWorkingSetPercentage")
+    by bin(TimeGenerated, 30m), NodeName
+| order by TimeGenerated desc
+
+// ========================================
+// QUERY 12: Contagem de Eventos por Categoria
+// ========================================
+// Resume a atividade geral do cluster
+AzureDiagnostics
+| where TimeGenerated > ago(7d)
+| summarize EventCount = count() by Category, bin(TimeGenerated, 1d)
+| order by TimeGenerated desc, EventCount desc
+| render columnchart
+
+// ========================================
+// QUERY 13: Busca por Nodepool Específico
+// ========================================
+// Substitua 'nodepool1' pelo nome do seu nodepool
+let targetNodePool = "nodepool1";
+AzureDiagnostics
+| where TimeGenerated > ago(7d)
+| where log_s contains targetNodePool
+| project TimeGenerated, Category, log_s
+| order by TimeGenerated desc
+
+// ========================================
+// QUERY 14: Análise de Scale por Hora do Dia
+// ========================================
+// Identifica padrões de scale ao longo do dia
+AzureDiagnostics
+| where TimeGenerated > ago(30d)
+| where Category == "cluster-autoscaler"
+| where log_s contains "ScaleUp" or log_s contains "ScaleDown"
+| extend 
+    Hour = hourofday(TimeGenerated),
+    EventType = iff(log_s contains "ScaleUp", "Scale Up", "Scale Down")
+| summarize EventCount = count() by Hour, EventType
+| order by Hour asc
+| render columnchart
+
+// ========================================
+// QUERY 15: Últimos 50 Eventos do Autoscaler
+// ========================================
+// Visão rápida dos eventos mais recentes
+AzureDiagnostics
+| where Category == "cluster-autoscaler"
+| project TimeGenerated, log_s
+| order by TimeGenerated desc
+| take 50
