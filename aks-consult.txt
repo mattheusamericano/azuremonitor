@@ -1,4 +1,14 @@
 // ========================================
+// QUERY 0: DIAGNÓSTICO - Ver Padrão dos Nomes dos Nodes
+// ========================================
+// RODE ESTA PRIMEIRO para entender o padrão de nomenclatura
+ContainerLogV2
+| where TimeGenerated > ago(1h)
+| distinct Computer
+| take 50
+| order by Computer asc
+
+// ========================================
 // QUERY 1: Listar Todos os Nodepools e Nodes
 // ========================================
 // Identifica todos os nodepools através do campo Computer
@@ -20,12 +30,34 @@ ContainerLogV2
 | render timechart
 
 // ========================================
-// QUERY 3: Monitoramento Contínuo - Quantidade de Nodes
+// QUERY 3 (ALTERNATIVA 1): Extração por VMSS
 // ========================================
-// Mostra EXATAMENTE quantos nodes cada nodepool tem a cada 5 minutos
+// Tenta extrair nodepool considerando padrão vmss
 ContainerLogV2
 | where TimeGenerated > ago(24h)
-| extend NodePool = extract(@"aks-([^-]+)-", 1, Computer)
+| extend NodePool = case(
+    Computer contains "vmss", extract(@"aks-([^-]+)-\d+-vmss", 1, Computer),
+    extract(@"aks-([^-]+)-", 1, Computer)
+)
+| summarize 
+    NodeCount = dcount(Computer),
+    NodeList = make_set(Computer)
+    by bin(TimeGenerated, 5m), NodePool
+| project TimeGenerated, NodePool, NodeCount, NodeList
+| order by TimeGenerated desc, NodePool asc
+
+// ========================================
+// QUERY 3 (ALTERNATIVA 2): Extração Completa
+// ========================================
+// Tenta múltiplos padrões de extração
+ContainerLogV2
+| where TimeGenerated > ago(24h)
+| extend NodePool = coalesce(
+    extract(@"aks-([a-zA-Z0-9]+)-\d+-vmss", 1, Computer),
+    extract(@"aks-([a-zA-Z0-9]+)-\d+", 1, Computer),
+    extract(@"aks-([^-]+)", 1, Computer),
+    "unknown"
+)
 | summarize 
     NodeCount = dcount(Computer),
     NodeList = make_set(Computer)
