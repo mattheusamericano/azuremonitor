@@ -11,31 +11,27 @@ ContainerLogV2
 // ========================================
 // QUERY 2: Contagem de Nodes por Nodepool ao Longo do Tempo
 // ========================================
-// Mostra a evolução da quantidade de nodes em cada nodepool
+// Mostra QUANTOS nodes cada nodepool tem em cada momento
 ContainerLogV2
-| where TimeGenerated > ago(7d)
+| where TimeGenerated > ago(24h)
 | extend NodePool = extract(@"aks-([^-]+)-", 1, Computer)
-| summarize NodeCount = dcount(Computer) by bin(TimeGenerated, 30m), NodePool
-| order by TimeGenerated desc, NodePool asc
+| summarize NodeCount = dcount(Computer) by bin(TimeGenerated, 5m), NodePool
+| order by TimeGenerated asc, NodePool asc
 | render timechart
 
 // ========================================
-// QUERY 3: Detectar Mudanças de Scale (Up/Down)
+// QUERY 3: Monitoramento Contínuo - Quantidade de Nodes
 // ========================================
-// Identifica quando houve mudança na quantidade de nodes
+// Mostra EXATAMENTE quantos nodes cada nodepool tem a cada 5 minutos
 ContainerLogV2
-| where TimeGenerated > ago(7d)
+| where TimeGenerated > ago(24h)
 | extend NodePool = extract(@"aks-([^-]+)-", 1, Computer)
-| summarize NodeCount = dcount(Computer) by bin(TimeGenerated, 10m), NodePool
-| order by NodePool asc, TimeGenerated asc
-| serialize
-| extend PrevCount = prev(NodeCount, 1), PrevNodePool = prev(NodePool, 1)
-| where NodePool == PrevNodePool and NodeCount != PrevCount
-| extend 
-    Delta = NodeCount - PrevCount,
-    ChangeType = iff(NodeCount > PrevCount, "⬆️ Scale Up", "⬇️ Scale Down")
-| project TimeGenerated, NodePool, PreviousNodes = PrevCount, CurrentNodes = NodeCount, Delta, ChangeType
-| order by TimeGenerated desc
+| summarize 
+    NodeCount = dcount(Computer),
+    NodeList = make_set(Computer)
+    by bin(TimeGenerated, 5m), NodePool
+| project TimeGenerated, NodePool, NodeCount, NodeList
+| order by TimeGenerated desc, NodePool asc
 
 // ========================================
 // QUERY 4: Status Atual de Cada Nodepool
@@ -210,15 +206,38 @@ ContainerLogV2
 | render columnchart
 
 // ========================================
-// QUERY 15: Últimas Atividades por Node
+// QUERY EXTRA: Monitoramento em Tempo Real (1 minuto)
 // ========================================
-// Lista últimos logs de cada node individual
+// Granularidade de 1 minuto para acompanhamento detalhado
+ContainerLogV2
+| where TimeGenerated > ago(2h)
+| extend NodePool = extract(@"aks-([^-]+)-", 1, Computer)
+| summarize NodeCount = dcount(Computer) by bin(TimeGenerated, 1m), NodePool
+| order by TimeGenerated desc, NodePool asc
+| render timechart
+
+// ========================================
+// QUERY EXTRA 2: Tabela Atual com Detalhes
+// ========================================
+// Mostra estado atual AGORA com lista de nodes
+ContainerLogV2
+| where TimeGenerated > ago(5m)
+| extend NodePool = extract(@"aks-([^-]+)-", 1, Computer)
+| summarize 
+    CurrentNodeCount = dcount(Computer),
+    Nodes = make_list(Computer)
+    by NodePool
+| project NodePool, CurrentNodeCount, Nodes
+| order by NodePool asc
+
+// ========================================
+// QUERY EXTRA 3: Comparação Por Hora
+// ========================================
+// Mostra a contagem de nodes hora a hora
 ContainerLogV2
 | where TimeGenerated > ago(24h)
 | extend NodePool = extract(@"aks-([^-]+)-", 1, Computer)
-| summarize 
-    LastActivity = max(TimeGenerated),
-    LogCount = count(),
-    Containers = make_set(ContainerName)
-    by Computer, NodePool
-| order by LastActivity desc
+| summarize NodeCount = dcount(Computer) by bin(TimeGenerated, 1h), NodePool
+| extend Hour = format_datetime(TimeGenerated, 'dd/MM HH:mm')
+| project Hour, NodePool, NodeCount
+| order by TimeGenerated desc, NodePool asc
