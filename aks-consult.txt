@@ -1,7 +1,43 @@
 // ========================================
-// QUERY 0: DIAGNÓSTICO - Ver Padrão dos Nomes dos Nodes
+// QUERY 0A: DIAGNÓSTICO - Verificar Tabelas Disponíveis
 // ========================================
-// RODE ESTA PRIMEIRO para entender o padrão de nomenclatura
+// Descobre quais tabelas relacionadas ao AKS você tem
+search in (Perf, InsightsMetrics, KubePodInventory, KubeNodeInventory, 
+          ContainerInventory, KubeEvents, AzureDiagnostics, ContainerLogV2) 
+          TimeGenerated > ago(1h)
+| summarize count() by $table
+| order by count_ desc
+
+// ========================================
+// QUERY 0B: DIAGNÓSTICO - Ver Nodes no Perf
+// ========================================
+ContainerNodeInventory
+| where TimeGenerated > ago(1h)
+| distinct Computer
+| take 50
+
+// ========================================
+// QUERY 0C: DIAGNÓSTICO - Ver Nodes no InsightsMetrics
+// ========================================
+InsightsMetrics
+| where TimeGenerated > ago(1h)
+| where Namespace == "container.azm.ms/nodes"
+| extend NodeName = tostring(Tags["host"])
+| distinct NodeName
+| take 50
+
+// ========================================
+// QUERY 0D: DIAGNÓSTICO - Ver Nodes no Perf
+// ========================================
+Perf
+| where TimeGenerated > ago(1h)
+| where ObjectName == "K8SNode"
+| distinct Computer
+| take 50
+
+// ========================================
+// QUERY 0E: DIAGNÓSTICO - Padrão ContainerLogV2
+// ========================================
 ContainerLogV2
 | where TimeGenerated > ago(1h)
 | distinct Computer
